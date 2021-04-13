@@ -47,8 +47,15 @@ add_project_arguments([# These just add noise:
                       language : 'cpp')
 
 # Handle file too large error when cross-compiling to windows
-if host_machine.system() == 'windows'
+if host_machine.system() == 'windows' or host_machine.system() == 'cygwin'
   add_project_arguments(['-Wa,-mbig-obj'], language : 'cpp')
+endif
+
+if host_machine.system() == 'cygwin'
+# We need this for the header file to define readlink( ) in src/core/utils/RbFileManager.cpp
+# We need this to define fileno( ) in src/grammar/lex.l
+# Perhaps we should define this in the source code, but src/grammar.lex.l is a generated file.
+  add_project_arguments(['-D_POSIX_C_SOURCE=200112L'], language: 'cpp')
 endif
 
 boost_modules = [ 'regex',
