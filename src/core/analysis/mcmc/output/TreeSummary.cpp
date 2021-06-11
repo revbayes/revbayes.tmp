@@ -59,7 +59,7 @@ TreeSummary::AnnotationReport::AnnotationReport() :
  */
 TreeSummary::TreeSummary( TraceTree* t, bool c ) :
     clock( c ),
-    rooted( true ),
+    rooted( c ),
     use_outgroup(false)
 {
     traces.push_back(t);
@@ -72,7 +72,7 @@ TreeSummary::TreeSummary( TraceTree* t, bool c ) :
 TreeSummary::TreeSummary( std::vector<TraceTree* > t, bool c ) :
     traces(t),
     clock( c ),
-    rooted( true ),
+    rooted( c ),
     use_outgroup(false)
 {
     if( traces.empty() )
@@ -508,9 +508,7 @@ void TreeSummary::mapContinuous(Tree &tree, const std::string &n, size_t paramIn
 
                         root_checked = true;
 
-                        size_t sample_clade_index = sample_clade_indices[ summary_newick[j] ];
-
-                        const TopologyNode &sample_node = sample_tree.getNode( sample_clade_index );
+                        const TopologyNode &sample_node = sample_tree.getRoot();
 
                         std::vector<std::string> params;
                         if ( isNodeParameter == true )
@@ -1002,7 +1000,8 @@ double TreeSummary::computeEntropy( double credible_interval_size, int num_taxa,
 std::vector<double> TreeSummary::computePairwiseRFDistance( double credible_interval_size, bool verbose )
 {
     summarize( verbose );
-    std::vector<Tree> unique_trees;
+    std::vector<Tree*> unique_trees;
+    std::vector< std::vector<RbBitSet>* > unique_trees_bs;
     std::vector<size_t> sample_count;
     NewickConverter converter;
     double total_prob = 0;
@@ -1016,18 +1015,23 @@ std::vector<double> TreeSummary::computePairwiseRFDistance( double credible_inte
         sample_count.push_back( freq );
 
         Tree* current_tree = converter.convertFromNewick( it->first );
-        unique_trees.push_back( *current_tree );
-        delete current_tree;
+        unique_trees.push_back( current_tree );
+        
+        std::vector<RbBitSet>* this_clade_bs = new std::vector<RbBitSet>();
+        current_tree->getRoot().getAllClades(*this_clade_bs, current_tree->getNumberOfTips(), true);
+        unique_trees_bs.push_back( this_clade_bs );
+        
         if ( total_prob >= credible_interval_size )
         {
             break;
         }
 
     }
-
+    
     std::vector<double> rf_distances;
     for (size_t i=0; i<unique_trees.size(); ++i)
     {
+
         // first we need to compare the tree to 'itself'
         for (size_t k=0; k<(sample_count[i]*(sample_count[i]-1)); ++k )
         {
@@ -1036,15 +1040,24 @@ std::vector<double> TreeSummary::computePairwiseRFDistance( double credible_inte
 
         for (size_t j=i+1; j<unique_trees.size(); ++j)
         {
-            const Tree &a = unique_trees[i];
-            const Tree &b = unique_trees[j];
-            double rf = TreeUtilities::computeRobinsonFouldDistance(a, b);
+            
+            std::vector<RbBitSet>* a = unique_trees_bs[i];
+            std::vector<RbBitSet>* b = unique_trees_bs[j];
+            double rf = TreeUtilities::computeRobinsonFouldDistance(*a, *b, true);
 
             for (size_t k=0; k<(sample_count[i]*sample_count[j]); ++k )
             {
                 rf_distances.push_back( rf );
             }
         }
+    }
+    for (size_t i=0; i<unique_trees.size(); ++i)
+    {
+        Tree* tmp = unique_trees[i];
+        std::vector<RbBitSet>* this_clade_bs = unique_trees_bs[i];
+
+        delete tmp;
+        delete this_clade_bs;
     }
 
     return rf_distances;
