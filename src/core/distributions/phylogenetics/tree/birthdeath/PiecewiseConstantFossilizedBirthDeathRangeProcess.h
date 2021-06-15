@@ -44,14 +44,13 @@ namespace RevBayesCore {
                                                       const TypedDagNode<RbVector<double> > *times,
                                                       const std::string &condition,
                                                       const std::vector<Taxon> &taxa,
-                                                      bool pa,
-                                                      bool bounded);  //!< Constructor
+                                                      bool ages_from_counts);  //!< Constructor
         
         // public member functions
         PiecewiseConstantFossilizedBirthDeathRangeProcess*   clone(void) const;                                         //!< Create an independent clone
 
     protected:
-        void                                            updateStartEndTimes() const;
+        void                                            updateStartEndTimes();
 
         // Parameter management functions
         double                                          computeLnProbability(void);                            //!< Compute the log-transformed probability of the current value.
@@ -70,8 +69,6 @@ namespace RevBayesCore {
         // helper functions
         void                                            updateGamma(bool force = false);                             //!< Number of species alive at time t.
         void                                            redrawValue(void);
-
-        mutable double                                  origin;
 
         std::vector<size_t>                             gamma_i;
         std::vector<std::vector<bool> >                 gamma_links;

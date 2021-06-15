@@ -16,6 +16,7 @@
 #include "AbstractBirthDeathProcess.h"
 #include "AbstractPiecewiseConstantFossilizedRangeProcess.h"
 #include "RbException.h"
+#include "RbMathFunctions.h"
 #include "StringUtilities.h"
 #include "Taxon.h"
 #include "TimeInterval.h"
@@ -53,11 +54,10 @@ PiecewiseConstantFossilizedBirthDeathProcess::PiecewiseConstantFossilizedBirthDe
                                                                                            const std::string &incondition,
                                                                                            const std::vector<Taxon> &intaxa,
                                                                                            bool uo,
-                                                                                           bool bounded,
-                                                                                           bool pa,
+                                                                                           bool afc,
                                                                                            bool ex) :
     AbstractBirthDeathProcess(ra, incondition, intaxa, uo),
-    AbstractPiecewiseConstantFossilizedRangeProcess(inspeciation, inextinction, inpsi, incounts, inrho, intimes, intaxa, bounded, pa),
+    AbstractPiecewiseConstantFossilizedRangeProcess(inspeciation, inextinction, inpsi, incounts, inrho, intimes, intaxa, afc),
     extended(ex)
 {
     for(std::vector<const DagNode*>::iterator it = range_parameters.begin(); it != range_parameters.end(); it++)
@@ -166,8 +166,9 @@ double PiecewiseConstantFossilizedBirthDeathProcess::computeLnProbabilityTimes( 
         // otherwise, integrate out the speciation times for descendants of sampled ancestors
         if ( I[i] == true )
         {
-            double y_a = b_i[i];
-            double o   = taxa[i].getAgeRange().getMax();
+            double y_a   = b_i[i];
+            double o     = taxa[i].getMaxAge();
+            double o_min = taxa[i].getMaxAgeRange().getMin();
 
             size_t y_ai = l(y_a);
 
@@ -177,7 +178,7 @@ double PiecewiseConstantFossilizedBirthDeathProcess::computeLnProbabilityTimes( 
             // if this is a sampled tree, then integrate out the speciation times for descendants of sampled ancestors
             if( extended == false )
             {
-                size_t oi = bounded ? l(o) : oldest_intervals[i];
+                size_t oi = oldest_intervals[i];
 
                 double x = 0.0;
 
@@ -190,26 +191,28 @@ double PiecewiseConstantFossilizedBirthDeathProcess::computeLnProbabilityTimes( 
                     x += q_tilde_i[j] - q_i[j];
                 }
 
-                if( bounded == false )
+                // if there's no uncertainty in o, replace factor for the first appearance
+                if( auto_uncertainty == false && o == o_min )
                 {
-                    double a = std::max(d_i[i], times[oi]);
-                    double Ls_plus_a = oi > 0 ? std::min(y_a, times[oi-1]) : y_a;
-                    double Ls = Ls_plus_a - a;
-
-                    // replace H_i
-                    if ( model == KNOWNCOUNTS )
-                    {
-                        x += log( Ls ) - log( H[i] );
-                    }
-                    else
-                    {
-                        x += log(expm1(Ls*fossil[oi])) - log(H[i]) - log(fossil[oi]);
-                    }
+                    x -= q(oi, o, true) - q(oi, o);
                 }
                 else
                 {
-                    // replace q terms at oi
-                    x += q(oi, o) - q(oi, o, true);
+                    double Ls = 0.0;
+
+                    // replace integrated Q_i terms
+                    if ( auto_uncertainty == true )
+                    {
+                        double a = std::max(d_i[i], times[oi]);
+                        double Ls_plus_a = oi > 0 ? std::min(y_a, times[oi-1]) : y_a;
+                        Ls = Ls_plus_a - a;
+                    }
+                    else
+                    {
+                        Ls = o - o_min;
+                    }
+
+                    x += log( Ls ) - lnQ[i];
                 }
 
                 // compute definite integral
@@ -235,16 +238,7 @@ double PiecewiseConstantFossilizedBirthDeathProcess::computeLnProbabilityTimes( 
             size_t di = l(d_i[i]);
 
             // check constraints
-            if( bounded == false )
-            {
-                if( youngest_intervals[i] != di)
-                {
-                    // yi == di
-                    return RbConstants::Double::neginf;
-                }
-            }
-            // y == d
-            else if ( d_i[i] != taxa[i].getAgeRange().getMin() )
+            if ( d_i[i] != taxa[i].getMinAge() )
             {
                 return RbConstants::Double::neginf;
             }
@@ -255,14 +249,6 @@ double PiecewiseConstantFossilizedBirthDeathProcess::computeLnProbabilityTimes( 
                 // replace observed extinction density with unobserved extinction density
                 lnProb -= log( death[di] );
                 lnProb += log( p(di, d_i[i]) );
-
-                // replace one unobserved fossil sample with an observed fossil sample
-                // i.e increment the observed fossil count
-                if ( model == PRESENCEABSENCE )
-                {
-                    double Ls = times[di-1] - std::max(d_i[i], times[di]);
-                    lnProb += log( fossil[di] ) - log( 1.0 - exp( - Ls * fossil[di] ) );
-                }
             }
         }
     }
@@ -300,7 +286,7 @@ double PiecewiseConstantFossilizedBirthDeathProcess::getMaxTaxonAge( const Topol
 {
     if( node.isTip() )
     {
-        return node.getTaxon().getAgeRange().getMax();
+        return node.getTaxon().getMaxAge();
     }
     else
     {
@@ -377,13 +363,7 @@ double PiecewiseConstantFossilizedBirthDeathProcess::pSurvival(double start, dou
 {
     double t = start;
 
-    //std::vector<double> fossil_bak = fossil;
-
-    //std::fill(fossil.begin(), fossil.end(), 0.0);
-
     double p0 = p(l(t), t);
-
-    //fossil = fossil_bak;
 
     return 1.0 - p0;
 }
@@ -429,9 +409,9 @@ double PiecewiseConstantFossilizedBirthDeathProcess::q( size_t i, double t, bool
 }
 
 /**
- * \ln\int exp(psi t) q_tilde(t)/q(t) dt
+ * \int exp(psi t) q_tilde(t)/q(t) dt
  */
-double PiecewiseConstantFossilizedBirthDeathProcess::integrateQ( size_t i, double t ) const
+double PiecewiseConstantFossilizedBirthDeathProcess::H( size_t i, double x, double t ) const
 {
     double s = symmetric[i];
 
@@ -457,14 +437,59 @@ double PiecewiseConstantFossilizedBirthDeathProcess::integrateQ( size_t i, doubl
 
     double e = exp(-A*dt);
 
-    double diff2 = b + d + 2.0*a + (model == KNOWNCOUNTS ? f : -f);
+    double diff2 = b + d + 2.0*a + -f;
     double tmp = (1+B)/(A-diff2) - e*(1-B)/(A+diff2);
-    double intQ = exp(-(diff2-A)*dt/2) * tmp;
+    double H = exp(-f*(x-ti) ) * exp(-(diff2-A)*dt/2) * tmp;
 
-    intQ *= exp(-a*dt);
-
-    return intQ;
+    return H;
 }
+
+
+/**
+ * \int (t-t_j)^k q_tilde(t)/q(t) dt
+ */
+double PiecewiseConstantFossilizedBirthDeathProcess::Z(size_t k, size_t i, double x, double t) const
+{
+    double s = symmetric[i];
+
+    if ( s > 0.0 )
+    {
+        throw(RbException("Cannot integrate first occurrence age for beta > 0.0"));
+    }
+
+    // get the parameters
+    double b = birth[i];
+    double d = death[i];
+    double f = fossil[i];
+    double a = anagenetic[i];
+    double r = (i == num_intervals - 1 ? homogeneous_rho->getValue() : 0.0);
+    double ti = times[i];
+
+    double diff = b - d - f;
+    double bp   = b*f;
+
+    double A = sqrt( diff*diff + 4.0*bp);
+    double B = ( (1.0 - 2.0*(1.0-r)*p_i[i] )*b + d + f ) / A;
+
+    double sum = b + d + f + 2.0*a;
+    double alpha = 0.5*(A+sum);
+
+    double tmp1 = pow(-2,k) * (1+B) * exp(-(alpha-A)*(x-ti)) / pow(A-sum,k+1);
+    double tmp2 = pow(2,k)  * (1-B) * exp(-alpha*(x-ti))     / pow(A+sum,k+1);
+
+    try
+    {
+        tmp1 *= RbMath::incompleteGamma((alpha-A)*(t-x), k+1, false, false);
+        tmp2 *= RbMath::incompleteGamma(alpha*(t-x), k+1, false, false);
+    }
+    catch(RbException&)
+    {
+        return RbConstants::Double::nan;
+    }
+
+    return tmp1 - tmp2;
+}
+
 
 /**
  *
@@ -486,13 +511,13 @@ void PiecewiseConstantFossilizedBirthDeathProcess::simulateClade(std::vector<Top
         // make sure the tip age is equal to the last occurrence
         if( n[i]->isTip() )
         {
-            double min = n[i]->getTaxon().getAgeRange().getMin();
-            double max = n[i]->getTaxon().getAgeRange().getMax();
+            double min = n[i]->getTaxon().getMinAge();
+            double max = n[i]->getTaxon().getMaxAge();
 
             // in the extended tree, tip ages are extinction times
-            if( extended )
+            if ( extended )
             {
-                n[i]->setAge( present + rng->uniform01() * ( min - present ) );
+                n[i]->setAge( rng->uniform01() * min );
             }
             // in the sampled tree, tip ages are sampling times
             else
@@ -711,7 +736,8 @@ std::vector<double> PiecewiseConstantFossilizedBirthDeathProcess::simulateDiverg
  */
 double PiecewiseConstantFossilizedBirthDeathProcess::simulateDivergenceTime(double origin, double present) const
 {
-    // incorrect placeholder
+    // incorrect placeholder for constant SSBDP
+
 
     // Get the rng
     RandomNumberGenerator* rng = GLOBAL_RNG;
@@ -722,8 +748,7 @@ double PiecewiseConstantFossilizedBirthDeathProcess::simulateDivergenceTime(doub
     double age = origin - present;
     double b = birth[i];
     double d = death[i];
-    //double f = fossil[i];
-    double r = homogeneous_rho->getValue();
+    double p_e = homogeneous_rho->getValue();
 
 
     // get a random draw
@@ -734,18 +759,32 @@ double PiecewiseConstantFossilizedBirthDeathProcess::simulateDivergenceTime(doub
     double t = 0.0;
     if ( b > d )
     {
-        t = ( log( ( (b-d) / (1 - (u)*(1-((b-d)*exp((d-b)*age))/(r*b+(b*(1-r)-d)*exp((d-b)*age) ) ) ) - (b*(1-r)-d) ) / (r * b) ) )  /  (b-d);
+        if( p_e > 0.0 )
+        {
+            t = ( log( ( (b-d) / (1 - (u)*(1-((b-d)*exp((d-b)*age))/(p_e*b+(b*(1-p_e)-d)*exp((d-b)*age) ) ) ) - (b*(1-p_e)-d) ) / (p_e * b) ) )  /  (b-d);
+        }
+        else
+        {
+            t = log( 1 - u * (exp(age*(d-b)) - 1) / exp(age*(d-b)) ) / (b-d);
+        }
     }
     else
     {
-        t = ( log( ( (b-d) / (1 - (u)*(1-(b-d)/(r*b*exp((b-d)*age)+(b*(1-r)-d) ) ) ) - (b*(1-r)-d) ) / (r * b) ) )  /  (b-d);
+        if( p_e > 0.0 )
+        {
+            t = ( log( ( (b-d) / (1 - (u)*(1-(b-d)/(p_e*b*exp((b-d)*age)+(b*(1-p_e)-d) ) ) ) - (b*(1-p_e)-d) ) / (p_e * b) ) )  /  (b-d);
+        }
+        else
+        {
+            t = log( 1 - u * (1 - exp(age*(b-d)))  ) / (b-d);
+        }
     }
 
     return present + t;
 }
 
 
-int PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( const TopologyNode& node ) const
+int PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( const TopologyNode& node )
 {
     if( node.isTip() )
     {
@@ -767,14 +806,26 @@ int PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( const Top
         // if child is a tip, set the species/end time
         if( child.isTip() )
         {
-            d_i[i] = child.getAge();
+            double age = child.getAge();
+
+            if ( age != d_i[i] )
+            {
+                d_i[i] = age;
+                dirty_taxa[i] = true;
+            }
         }
 
         // is child a new species?
         // set start time at this node
         if( ( sa == false && c > 0 ) || ( sa && !child.isSampledAncestor() ) )
         {
-            b_i[i] = node.getAge(); // y_{a(i)}
+            double age = node.getAge(); // y_{a(i)}
+
+            if ( age != b_i[i] )
+            {
+                b_i[i] = age;
+                dirty_taxa[i] = true;
+            }
 
             I[i] = sa;
         }
@@ -788,7 +839,14 @@ int PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( const Top
             // set the start time to the origin
             if( node.isRoot() )
             {
-                b_i[i] = getOriginAge();
+                double age = getOriginAge();
+
+                if ( age != b_i[i] )
+                {
+                    b_i[i] = age;
+                    origin = age;
+                    dirty_taxa[i] = true;
+                }
             }
         }
     }
@@ -800,12 +858,14 @@ int PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( const Top
  *
  *
  */
-void PiecewiseConstantFossilizedBirthDeathProcess::updateIntervals() const
+void PiecewiseConstantFossilizedBirthDeathProcess::updateIntervals()
 {
     AbstractPiecewiseConstantFossilizedRangeProcess::updateIntervals();
 
-    for (int i = (int)num_intervals - 1; i >= 0; i--)
+    for (size_t interval = num_intervals; interval > 0; interval--)
     {
+        size_t i = interval - 1;
+
         double a = getAnageneticSpeciationRate(i);
         double s = getSymmetricSpeciationProbability(i);
 
@@ -825,9 +885,33 @@ void PiecewiseConstantFossilizedBirthDeathProcess::updateIntervals() const
  * Compute the log-transformed probability of the current value under the current parameter values.
  *
  */
-void PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( void ) const
+void PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( void )
 {
     updateStartEndTimes(getValue().getRoot());
+}
+
+
+void PiecewiseConstantFossilizedBirthDeathProcess::keepSpecialization(DagNode *toucher)
+{
+    dirty_taxa = std::vector<bool>(fbd_taxa.size(), false);
+}
+
+
+void PiecewiseConstantFossilizedBirthDeathProcess::restoreSpecialization(DagNode *toucher)
+{
+    partial_likelihood = stored_likelihood;
+    dirty_taxa = std::vector<bool>(fbd_taxa.size(), false);
+}
+
+
+void PiecewiseConstantFossilizedBirthDeathProcess::touchSpecialization(DagNode *toucher, bool touchAll)
+{
+    stored_likelihood = partial_likelihood;
+
+    if ( toucher != (DagNode*)dag_node || touchAll == true )
+    {
+        dirty_taxa = std::vector<bool>(fbd_taxa.size(), true);
+    }
 }
 
 
@@ -839,9 +923,6 @@ void PiecewiseConstantFossilizedBirthDeathProcess::updateStartEndTimes( void ) c
  */
 void PiecewiseConstantFossilizedBirthDeathProcess::swapParameterInternal(const DagNode *oldP, const DagNode *newP)
 {
-    AbstractBirthDeathProcess::swapParameterInternal(oldP, newP);
-    AbstractPiecewiseConstantFossilizedRangeProcess::swapParameterInternal(oldP, newP);
-
     if (oldP == heterogeneous_lambda_a)
     {
         heterogeneous_lambda_a = static_cast<const TypedDagNode< RbVector<double> >* >( newP );
@@ -857,5 +938,10 @@ void PiecewiseConstantFossilizedBirthDeathProcess::swapParameterInternal(const D
     else if (oldP == homogeneous_beta)
     {
         homogeneous_beta = static_cast<const TypedDagNode<double>* >( newP );
+    }
+    else
+    {
+        AbstractBirthDeathProcess::swapParameterInternal(oldP, newP);
+        AbstractPiecewiseConstantFossilizedRangeProcess::swapParameterInternal(oldP, newP);
     }
 }

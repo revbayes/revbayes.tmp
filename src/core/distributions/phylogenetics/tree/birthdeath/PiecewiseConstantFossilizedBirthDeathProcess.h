@@ -46,7 +46,6 @@ namespace RevBayesCore {
                                                       const std::vector<Taxon> &taxa,
                                                       bool uo,
                                                       bool pa,
-                                                      bool bounds,
                                                       bool ex );  //!< Constructor
         
         // public member functions
@@ -58,8 +57,8 @@ namespace RevBayesCore {
         void                                            simulateClade(std::vector<TopologyNode *> &n, double age, double present);
 
     protected:
-        void                                            updateStartEndTimes() const;
-        int                                             updateStartEndTimes(const TopologyNode & ) const;
+        void                                            updateStartEndTimes();
+        int                                             updateStartEndTimes(const TopologyNode & );
 
         double                                          pSurvival(double start, double end) const;             //!< Compute the probability of survival of the process (without incomplete taxon sampling).
 
@@ -71,15 +70,20 @@ namespace RevBayesCore {
         double                                          lnProbTreeShape(void) const;
 
         double                                          q(size_t i, double t, bool tilde = false) const;
-        double                                          integrateQ(size_t i, double t) const;
+        double                                          H(size_t i, double x, double t) const;
+        virtual double                                  Z(size_t k, size_t i, double x, double t) const;
 
         double                                          simulateDivergenceTime(double origin, double present) const;    //!< Simulate a speciation event.
         std::vector<double>                             simulateDivergenceTimes(size_t n, double origin, double present, double min) const;                 //!< Simulate n speciation events.
 
+        void                                            keepSpecialization(DagNode *toucher);
+        void                                            restoreSpecialization(DagNode *toucher);
+        void                                            touchSpecialization(DagNode *toucher, bool touchAll);
+
         // Parameter management functions
         void                                            swapParameterInternal(const DagNode *oldP, const DagNode *newP);                //!< Swap a parameter
 
-        virtual void                                    updateIntervals() const;
+        virtual void                                    updateIntervals();
 
     private:
         
@@ -98,7 +102,6 @@ namespace RevBayesCore {
         const TypedDagNode<RbVector<double> >*          heterogeneous_lambda_a;                                  //!< The heterogeneous anagenetic speciation rates.
         const TypedDagNode<double >*                    homogeneous_beta;                                        //!< The homogeneous symmetric speciation prob.
         const TypedDagNode<RbVector<double> >*          heterogeneous_beta;                                      //!< The heterogeneous symmetric speciation probs.
-
     };
 }
 
